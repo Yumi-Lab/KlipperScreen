@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 import logging
-
 import gi
-
+import uuid
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk, Pango
 from jinja2 import Environment
@@ -128,6 +127,13 @@ class BasePanel(ScreenPanel):
 
         self.update_time()
 
+    def get_mac_address(self):
+        mac = uuid.getnode()
+        mac_str = ''.join(f'{(mac >> ele) & 0xff:02x}' for ele in range(40, -1, -8))
+        return mac_str.upper()
+
+
+
     def load_battery_icons(self):
         img_size = self._gtk.img_scale * self.bts
         return {
@@ -229,8 +235,9 @@ class BasePanel(ScreenPanel):
             return self._gtk.Image("heat-up", img_size, img_size)
 
     def activate(self):
-        if self.time_update is None:
-            self.time_update = GLib.timeout_add_seconds(1, self.update_time)
+        #if self.time_update is None:
+            #self.time_update = GLib.timeout_add_seconds(1, self.update_time)
+        self.update_time()           
         if self.battery_update is None:
             self.battery_update = GLib.timeout_add_seconds(60, self.battery_percentage)
 
@@ -318,7 +325,7 @@ class BasePanel(ScreenPanel):
                     elif self.titlebar_name_type == "short":
                         name = device.split()[1] if len(device.split()) > 1 else device
                         name = f"{name[:1].upper()}: "
-                self.labels[device].set_label(f"{name}{temp:.0f}°")
+                self.labels[device].set_label(f"{name}{temp:.0f}Â°")
 
         if (self.current_extruder and 'toolhead' in data and 'extruder' in data['toolhead']
                 and data["toolhead"]["extruder"] != self.current_extruder):
@@ -374,17 +381,23 @@ class BasePanel(ScreenPanel):
 
         self.titlelbl.set_label(f"{printer} {title}")
 
+    #def update_time(self):
+        #now = datetime.now()
+        #confopt = self._config.get_main_config().getboolean("24htime", True)
+        #if now.minute != self.time_min or self.time_format != confopt:
+            #if confopt:
+                #self.control['time'].set_text(f'{now:%H:%M }')
+            #else:
+                #self.control['time'].set_text(f'{now:%I:%M %p}')
+            #self.time_min = now.minute
+            #self.time_format = confopt
+        #return True
+
     def update_time(self):
-        now = datetime.now()
-        confopt = self._config.get_main_config().getboolean("24htime", True)
-        if now.minute != self.time_min or self.time_format != confopt:
-            if confopt:
-                self.control['time'].set_text(f'{now:%H:%M }')
-            else:
-                self.control['time'].set_text(f'{now:%I:%M %p}')
-            self.time_min = now.minute
-            self.time_format = confopt
-        return True
+        mac_address = self.get_mac_address()
+        self.control['time'].set_text(mac_address)
+        return False  # On désactive la mise à jour toutes les secondes
+    
 
     def get_battery_icon(self, charge: float, plugged: bool):
         if plugged:
