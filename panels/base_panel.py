@@ -128,9 +128,13 @@ class BasePanel(ScreenPanel):
         self.update_time()
 
     def get_mac_address(self):
-        mac = uuid.getnode()
-        mac_str = ''.join(f'{(mac >> ele) & 0xff:02x}' for ele in range(40, -1, -8))
-        return mac_str.upper()
+      import netifaces
+      mac = netifaces.ifaddresses('end0')[netifaces.AF_LINK][0]['addr']
+      mac_clean = mac.replace(':', '').upper()
+      return mac_clean
+
+
+
 
 
 

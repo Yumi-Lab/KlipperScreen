@@ -157,6 +157,9 @@ create_virtualenv()
             exit 1
         fi
     fi
+    echo_text "Installing netifaces package..."
+    pip install netifaces
+    
     deactivate
     echo_ok "Virtual environment created"
 }
