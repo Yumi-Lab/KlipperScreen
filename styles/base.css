@@ -33,7 +33,7 @@ window {
 }
 
 treeview.view{
-    padding-right: 0.25em;
+    padding: 1em .25em;
 }
 
 junction {
@@ -71,6 +71,7 @@ button {
     border-radius: 0;
     border: 0;
     -gtk-icon-shadow: none;
+    transition: padding 0s;
 }
 
 .active image,
@@ -288,6 +289,10 @@ trough {
 
 .title_bar {
     min-height: 2em;
+}
+
+.spoolman_low {
+    color: @warning;
 }
 
 .content {
@@ -665,4 +670,12 @@ flowbox button {
 
 keyboard_box {
     padding: 0 20em;
+}
+
+.spool_title {
+    padding: .5em;
+}
+
+.spool_icon {
+    padding-right: .5em;
 }

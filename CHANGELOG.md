@@ -4,6 +4,12 @@ Probably all versions contain changes regarding documentation, translation, fixe
 
 ## Current master
 
+* add option to add spool weight into the titlebar (spoolman required)
+* add a wifi interface selector in the network panel
+* option to use keyboard navigation
+* allow starting in locked state
+* option to auto-lock the screen
+* if printer power_devices in ks config add shortcut to shutdown panel
 * change default value on macro shortcut to false
 * rotate the move buttons according to screw_rotation
 * add caching of some resources for perfomance

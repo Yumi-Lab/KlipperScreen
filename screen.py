@@ -27,6 +27,7 @@ from ks_includes.KlippyRest import KlippyRest
 from ks_includes.files import KlippyFiles
 from ks_includes.KlippyGtk import KlippyGtk
 from ks_includes.printer import Printer
+from ks_includes.spoolman_api import SpoolmanAPI
 from ks_includes.widgets.keyboard import Keyboard
 from ks_includes.widgets.prompts import Prompt
 from ks_includes.widgets.lockscreen import LockScreen
@@ -113,7 +114,7 @@ class KlipperScreen(Gtk.Window):
                 m = display.get_monitor(i)
                 logging.info(f"Screen {i}: {m.get_geometry().width}x{m.get_geometry().height}")
         else:
-            logging.warning(f"WARNING: No monitors detected by Gdk")
+            logging.warning("WARNING: No monitors detected by Gdk")
         try:
             mon_n = int(args.monitor)
             if not (-1 < mon_n < monitor_amount):
@@ -151,6 +152,7 @@ class KlipperScreen(Gtk.Window):
         self.setup_gtk_settings()
         self.style_provider = Gtk.CssProvider()
         self.screensaver = ScreenSaver(self)
+        self.lock_screen = LockScreen(self)
         self.gtk = KlippyGtk(self)
         self.base_css = ""
         self.load_base_styles()
@@ -178,9 +180,12 @@ class KlipperScreen(Gtk.Window):
         self.use_dpms = self._config.get_main_config().getboolean("use_dpms", fallback=(not self.wayland))
         self.use_dpms &= functions.dpms_loaded
         self.set_dpms(self.use_dpms)
-        self.lock_screen = LockScreen(self)
+        autolock = self._config.get_main_config().getint("autolock_timeout", fallback=0)
+        self.lock_screen.set_autolock_timeout(autolock)
         self.log_notification("KlipperScreen Started", 1)
         self.initial_connection()
+        if self._config.get_main_config().getboolean('start_locked', False):
+            self.lock_screen.lock(None)
 
     def update_cursor(self, show: bool):
         self.show_cursor = show
@@ -256,6 +261,9 @@ class KlipperScreen(Gtk.Window):
             self.printers[ind][name]["moonraker_path"],
             self.printers[ind][name]["moonraker_ssl"],
         )
+
+        self.spoolman_api = SpoolmanAPI(self.apiclient)
+
         self._ws = KlippyWebsocket(
             {
                 "on_connect": self.websocket_connected,
@@ -643,10 +651,8 @@ class KlipperScreen(Gtk.Window):
         if self._config.get_main_config().get('screen_blanking') != "off":
             logging.debug("Screen wake up")
         try:
-            subprocess.run(
-                f"xset -display {self.display_number} dpms force on",
-                shell=True, check=True
-            )
+            cmd = ["xset", "-display", self.display_number, "dpms", "force", "on"]
+            subprocess.run(cmd, check=True)
         except subprocess.CalledProcessError as e:
             self.show_popup_message(f"Error: {e}")
             self.set_dpms(False)
@@ -666,14 +672,10 @@ class KlipperScreen(Gtk.Window):
             state = functions.get_DPMS_state()
             if state != functions.DPMS_State.Fail:
                 try:
-                    subprocess.run(
-                        f"xset -display {self.display_number} dpms 0 0 0",
-                        shell=True, check=True
-                    )
-                    subprocess.run(
-                        f"xset -display {self.display_number} -dpms",
-                        shell=True, check=True
-                    )
+                    cmd = ["xset", "-display", self.display_number, "dpms", "0", "0", "0"]
+                    subprocess.run(cmd, check=True)
+                    cmd = ["xset", "-display", self.display_number, "-dpms"]
+                    subprocess.run(cmd, check=True)
                 except subprocess.CalledProcessError as e:
                     self.show_popup_message(f"FAILED to turn DPMS off on {self.display_number}:\n {e}")
                     return
@@ -687,10 +689,8 @@ class KlipperScreen(Gtk.Window):
 
     def set_dpms_timeout(self):
         try:
-            subprocess.run(
-                f"xset -display {self.display_number} dpms 0 {self.blanking_time} 0",
-                shell=True, check=True
-            )
+            cmd = ["xset", "-display", self.display_number, "dpms", "0", f"{self.blanking_time}", "0"]
+            subprocess.run(cmd, check=True)
             logging.info(f"DPMS on {self.display_number} set to: {self.blanking_time}")
         except subprocess.CalledProcessError as e:
             self.show_popup_message(f"DPMS Error:\n {e}")
@@ -700,6 +700,9 @@ class KlipperScreen(Gtk.Window):
             self.check_dpms_timeout = GLib.timeout_add_seconds(1, self.check_dpms_state)
             return
 
+    def set_autolock_timeout(self, time):
+        self.lock_screen.set_autolock_timeout(time)
+
     def set_screenblanking_printing_timeout(self, time):
         if self.printer and self.printer.state in ("printing", "paused"):
             self.set_screenblanking_timeout(time)
@@ -707,8 +710,10 @@ class KlipperScreen(Gtk.Window):
     def set_screenblanking_timeout(self, time):
         # disable screensaver we have our own
         if not self.wayland:
-            os.system(f"xset -display {self.display_number} s off")
-            os.system(f"xset -display {self.display_number} s noblank")
+            cmd = ["xset", "-display", self.display_number, "s", "off"]
+            subprocess.call(cmd)
+            cmd = ["xset", "-display", self.display_number, "s", "noblank"]
+            subprocess.call(cmd)
         if time == "off":
             self.blanking_time = 0
         else:
@@ -899,7 +904,22 @@ class KlipperScreen(Gtk.Window):
                     "printer.gcode.script",
                     script
                 )
+        elif action == "notify_active_spool_set":
+            spool_id = data["spool_id"] if "spool_id" in data else self.spoolman_api.get_active_spool_id()
+            self.update_spool_data(spool_id)
         self.process_update(action, data)
+
+    def update_spool_data(self, spool_id=None):
+        if not spool_id:
+            spool_id = self.spoolman_api.get_active_spool_id()
+        if not spool_id or not isinstance(spool_id, int):
+            self.printer.set_active_spool(spool_id=None)
+            return
+        spool_data = self.spoolman_api.get_spool_details(spool_id)
+        if spool_data is None:
+            self.printer.set_active_spool(spool_id=spool_id)
+            return
+        self.printer.set_active_spool(spool_id=spool_id, spool_data=spool_data)
 
     def process_action(self, action):
         if action.startswith("prompt"):
@@ -1107,6 +1127,7 @@ class KlipperScreen(Gtk.Window):
                 self.printer.configure_cameras(cameras['webcams'])
         if "spoolman" in self.server_info["components"]:
             self.printer.enable_spoolman()
+            self.update_spool_data(self.spoolman_api.get_active_spool_id())
 
     def init_klipper(self):
         if self.reinit_count > self.max_retries or 'printer_select' in self._cur_panels:
@@ -1136,6 +1157,9 @@ class KlipperScreen(Gtk.Window):
             self._init_printer("Error getting printer configuration")
             return False
         self.printer.reinit(printer_info, config['status'])
+        objects = self.apiclient.send_request("printer/objects/list")
+        if objects and 'objects' in objects:
+            self.printer.register_dynamic_sensors(objects['objects'])
         self.printer.available_commands = self.apiclient.get_gcode_help()
         info = self.apiclient.send_request("machine/system_info")
         if info and 'system_info' in info:

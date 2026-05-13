@@ -50,6 +50,7 @@ class Panel(ScreenPanel):
         self.move_grid = None
         self.time_grid = None
         self.extrusion_grid = None
+        self.idex = False
 
         data = ['pos_x', 'pos_y', 'pos_z', 'time_left', 'duration', 'slicer_time', 'file_time',
                 'filament_time', 'est_time', 'speed_factor', 'req_speed', 'max_accel', 'extrude_factor', 'zoffset',
@@ -166,10 +167,11 @@ class Panel(ScreenPanel):
                                                         'extra': extruder})
             self.buttons['extruder'][extruder].set_halign(Gtk.Align.START)
 
-        self.labels['temp_grid'] = Gtk.Grid()
+        self.labels['temp_grid'] = Gtk.Grid(column_homogeneous=True)
         nlimit = 2 if self._screen.width <= 500 else 3
         n = 0
         if nlimit > 2 and len(self._printer.get_tools()) == 2:
+            self.idex = True
             for extruder in self.buttons['extruder']:
                 self.labels['temp_grid'].attach(self.buttons['extruder'][extruder], n, 0, 1, 1)
                 n += 1
@@ -381,11 +383,11 @@ class Panel(ScreenPanel):
         saved_z_offset = None
         msg = f"Apply {sign}{abs(self.zoffset)} offset to {device}?"
         if device == "probe":
-            msg = _("Apply %s%.3f offset to Probe?") % (sign, abs(self.zoffset))
+            msg = _("Apply {sign}{offset:.3f} offset to Probe?").format(sign=sign, offset=abs(self.zoffset))
             if probe := self._printer.get_probe():
                 saved_z_offset = probe['z_offset']
         elif device == "endstop":
-            msg = _("Apply %s%.3f offset to Endstop?") % (sign, abs(self.zoffset))
+            msg = _("Apply {sign}{offset:.3f} offset to Endstop?").format(sign=sign, offset=abs(self.zoffset))
             if 'stepper_z' in self._printer.get_config_section_list():
                 saved_z_offset = self._printer.get_config_section('stepper_z')['position_endstop']
             elif 'stepper_a' in self._printer.get_config_section_list():
@@ -409,6 +411,15 @@ class Panel(ScreenPanel):
             self._screen._ws.klippy.gcode_script("SAVE_CONFIG")
 
     def restart(self, widget):
+        buttons = [
+            {"name": _("Restart Print"), "response": Gtk.ResponseType.OK, "style": 'dialog-default'},
+            {"name": _("Go Back"), "response": Gtk.ResponseType.CANCEL, "style": 'dialog-info'}
+        ]
+        label = Gtk.Label(hexpand=True, vexpand=True, wrap=True)
+        label.set_markup(_("Are you sure you wish to restart this print?"))
+        self._gtk.Dialog(_("Restart"), buttons, label, self.restart_confirm)
+
+    def restart_print(self):
         if self.filename:
             self.disable_button("restart")
             if self.state == "error":
@@ -419,13 +430,18 @@ class Panel(ScreenPanel):
         else:
             logging.info(f"Could not restart {self.filename}")
 
+    def restart_confirm(self, dialog, response_id):
+        self._gtk.remove_dialog(dialog)
+        if response_id == Gtk.ResponseType.OK:
+            self.restart_print()
+
     def resume(self, widget):
-        self._screen._ws.klippy.print_resume()
+        self._screen._send_action(widget, "printer.print.resume", {})
         self._screen.show_all()
 
     def pause(self, widget):
         self.disable_button("pause", "resume")
-        self._screen._ws.klippy.print_pause()
+        self._screen._send_action(widget, "printer.print.pause", {})
         self._screen.show_all()
 
     def cancel(self, widget):
@@ -510,10 +526,11 @@ class Panel(ScreenPanel):
 
         if 'toolhead' in data:
             if 'extruder' in data['toolhead'] and data['toolhead']['extruder'] != self.current_extruder:
-                self.labels['temp_grid'].remove_column(0)
-                self.labels['temp_grid'].insert_column(0)
                 self.current_extruder = data["toolhead"]["extruder"]
-                self.labels['temp_grid'].attach(self.buttons['extruder'][self.current_extruder], 0, 0, 1, 1)
+                if not self.idex:
+                    self.labels['temp_grid'].remove_column(0)
+                    self.labels['temp_grid'].insert_column(0)
+                    self.labels['temp_grid'].attach(self.buttons['extruder'][self.current_extruder], 0, 0, 1, 1)
                 self._screen.show_all()
             if "max_accel" in data["toolhead"]:
                 self.labels['max_accel'].set_label(f"{data['toolhead']['max_accel']:.0f} {self.mms2}")
@@ -736,6 +753,7 @@ class Panel(ScreenPanel):
             self.buttons['button_grid'].attach(self.buttons['fine_tune'], 2, 0, 1, 1)
             self.buttons['button_grid'].attach(self.buttons['control'], 3, 0, 1, 1)
             self.enable_button("pause", "cancel")
+            self._gtk.Button_busy(self.buttons['cancel'], False)
             self.can_close = False
         elif self.state == "paused":
             self.buttons['button_grid'].attach(self.buttons['resume'], 0, 0, 1, 1)
@@ -743,6 +761,15 @@ class Panel(ScreenPanel):
             self.buttons['button_grid'].attach(self.buttons['fine_tune'], 2, 0, 1, 1)
             self.buttons['button_grid'].attach(self.buttons['control'], 3, 0, 1, 1)
             self.enable_button("resume", "cancel")
+            self._gtk.Button_busy(self.buttons['cancel'], False)
+            self.can_close = False
+        elif self.state == "cancelling":
+            self.buttons['button_grid'].attach(self.buttons['resume'], 0, 0, 1, 1)
+            self.buttons['button_grid'].attach(self.buttons['cancel'], 1, 0, 1, 1)
+            self.buttons['button_grid'].attach(self.buttons['restart'], 2, 0, 1, 1)
+            self.buttons['button_grid'].attach(self.buttons['menu'], 3, 0, 1, 1)
+            self._gtk.Button_busy(self.buttons['cancel'], True)
+            self.disable_button("resume", "restart", "menu")
             self.can_close = False
         else:
             offset = self._printer.get_stat("gcode_move", "homing_origin")
@@ -765,9 +792,9 @@ class Panel(ScreenPanel):
                 self.enable_button("restart")
             else:
                 self.disable_button("restart")
-            if self.state != "cancelling":
-                self.buttons['button_grid'].attach(self.buttons['menu'], 3, 0, 1, 1)
-                self.can_close = True
+            self.buttons['button_grid'].attach(self.buttons['menu'], 3, 0, 1, 1)
+            self.enable_button("menu")
+            self.can_close = True
         self.content.show_all()
 
     def show_file_thumbnail(self):

@@ -27,6 +27,9 @@ class Printer:
         self.cameras = []
         self.available_commands = {}
         self.spoolman = False
+        self.active_spool_id = None
+        self.active_spool = None
+        self.active_spool_checked = False
         self.temp_devices = self.sensors = None
         self.system_info = {}
         self.warnings = []
@@ -48,6 +51,9 @@ class Printer:
         self.stop_tempstore_updates()
         self.system_info.clear()
         self.warnings = []
+        self.active_spool_id = None
+        self.active_spool = None
+        self.active_spool_checked = False
 
         for x in self.config.keys():
             # Support for hiding devices by name
@@ -94,6 +100,18 @@ class Printer:
         self.tools = sorted(self.tools)
         self.log_counts(printer_info)
         self.process_update(data)
+
+    def register_dynamic_sensors(self, objects):
+        for obj in objects:
+            if obj.startswith("temperature_sensor "):
+                name = obj.split(" ", 1)[1]
+                if name.startswith("_"):
+                    continue
+                if obj not in self.config:
+                    logging.info(f"Registering dynamic sensor: {obj}")
+                    self.config[obj] = {}
+                    self.data[obj] = {"temperature": 0}
+                    self.tempdevcount += 1
 
     def log_counts(self, printer_info):
         logging.info(f"Klipper version: {printer_info['software_version']}")
@@ -420,3 +438,7 @@ class Printer:
     def enable_spoolman(self):
         logging.info("Enabling Spoolman")
         self.spoolman = True
+
+    def set_active_spool(self, spool_id=None, spool_data=None):
+        self.active_spool_id = spool_id
+        self.active_spool = spool_data

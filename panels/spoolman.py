@@ -6,6 +6,7 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, GdkPixbuf, GObject, Pango, Gdk
+from ks_includes.widgets.combo import ComboBoxPlus
 from ks_includes.screen_panel import ScreenPanel
 from ks_includes.KlippyRest import KlippyRest
 from datetime import datetime
@@ -104,10 +105,15 @@ class SpoolmanSpool(GObject.GObject):
 
     @property
     def name(self):
-        result = self.filament.name
-        if self.filament.vendor:
-            result = " ".join([self.filament.vendor.name, "-", result])
-        return result
+        parts = []
+        vendor_name = getattr(self.filament.vendor, "name", None) if self.filament.vendor else None
+        if vendor_name:
+            parts.append(vendor_name)
+        if getattr(self.filament, "name", None):
+            parts.append(self.filament.name)
+        if getattr(self.filament, "material", None):
+            parts.append(self.filament.material)
+        return " - ".join(parts) if parts else self.filament.name
 
     @property
     def icon(self):
@@ -132,8 +138,7 @@ class SpoolmanSpool(GObject.GObject):
 
 
 class Panel(ScreenPanel):
-    apiClient: KlippyRest
-    _active_spool_id: int = None
+    _prev_active_id: int = None
 
     @staticmethod
     def spool_compare_id(model, row1, row2, user_data):
@@ -164,7 +169,6 @@ class Panel(ScreenPanel):
     def __init__(self, screen, title):
         title = title or "Spoolman"
         super().__init__(screen, title)
-        self.apiClient = screen.apiclient
         if self._config.get_main_config().getboolean("24htime", True):
             self.timeFormat = '%Y-%m-%d %H:%M'
         else:
@@ -191,13 +195,13 @@ class Panel(ScreenPanel):
 
         refresh = self._gtk.Button("refresh", style="color1", scale=.66)
         refresh.get_style_context().add_class("buttons_slim")
-        refresh.connect('clicked', self.load_spools)
+        refresh.connect('clicked', self.refresh)
 
         sort_btn_id = self._gtk.Button(None, _("ID"), "color4", self.bts, Gtk.PositionType.RIGHT, 1)
         sort_btn_id.connect("clicked", self.change_sort, "id")
         sort_btn_id.get_style_context().add_class("buttons_slim")
 
-        sort_btn_used = self._gtk.Button(None, _("Last Used"), "color3", self.bts, Gtk.PositionType.RIGHT, 1)
+        sort_btn_used = self._gtk.Button(None, _("Used"), "color3", self.bts, Gtk.PositionType.RIGHT, 1)
         sort_btn_used.connect("clicked", self.change_sort, "last_used")
         sort_btn_used.get_style_context().add_class("buttons_slim")
 
@@ -205,11 +209,8 @@ class Panel(ScreenPanel):
         switch.set_active(self._config.get_config().getboolean("spoolman", "hide_archived", fallback=True))
         switch.connect("notify::active", self.switch_config_option, "spoolman", "hide_archived", self.load_spools)
 
-        name = Gtk.Label(halign=Gtk.Align.START, valign=Gtk.Align.CENTER, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
-        name.set_markup(_("Archived"))
-
         archived = Gtk.Box(valign=Gtk.Align.CENTER)
-        archived.add(name)
+        archived.add(self._gtk.Image("archived", self._gtk.img_scale * self.bts * 2))
         archived.add(switch)
 
         sbox = Gtk.Box(hexpand=True, vexpand=False)
@@ -228,7 +229,7 @@ class Panel(ScreenPanel):
         row.add(hbox)
 
         label = Gtk.Label(_("Material"))
-        _material_filter = Gtk.ComboBox(model=self._materials, hexpand=True)
+        _material_filter = ComboBoxPlus(model=self._materials, hexpand=True)
         _material_filter.connect("changed", self._on_material_filter_changed)
         cellrenderertext = Gtk.CellRendererText()
         _material_filter.pack_start(cellrenderertext, True)
@@ -250,10 +251,11 @@ class Panel(ScreenPanel):
         self.main.pack_start(self.scroll, True, True, 0)
 
         self.load_spools()
-        self.get_active_spool()
         self._treeview = Gtk.TreeView(model=sortable, headers_visible=False, show_expanders=False)
 
-        text_renderer = Gtk.CellRendererText(wrap_width=self._gtk.content_width / 4)
+        text_renderer = Gtk.CellRendererText()
+        # Using wrapping causes unwanted vertical space, and it adds more each times it wraps
+        text_renderer.set_property('ellipsize', Pango.EllipsizeMode.END)
         pixbuf_renderer = Gtk.CellRendererPixbuf(xpad=5, ypad=5)
         checkbox_renderer = Gtk.CellRendererToggle()
         column_id = Gtk.TreeViewColumn(cell_renderer=text_renderer)
@@ -286,12 +288,17 @@ class Panel(ScreenPanel):
         column_last_used.set_visible(False)
         column_last_used.set_sort_column_id(1)
 
-        column_material = Gtk.TreeViewColumn(cell_renderer=text_renderer)
-        column_material.set_cell_data_func(
-            text_renderer,
+        edit_renderer = Gtk.CellRendererPixbuf(xpad=8, ypad=8)
+        self._column_edit = Gtk.TreeViewColumn(cell_renderer=edit_renderer)
+        self._column_edit.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
+        edit_icon_size = self._gtk.img_scale * self.bts * 2
+        self._column_edit.set_fixed_width(max(edit_icon_size + 20, round(self._gtk.font_size * 6.5)))
+        edit_icon = self._gtk.PixbufFromIcon("edit", edit_icon_size, edit_icon_size)
+        self._column_edit.set_cell_data_func(
+            edit_renderer,
             lambda column, cell, model, it, data:
             self._set_cell_background(cell, model.get_value(it, 0)) and
-            cell.set_property('text', model.get_value(it, 0).filament.material)
+            cell.set_property('pixbuf', edit_icon)
         )
 
         checkbox_renderer.connect("toggled", self._set_active_spool)
@@ -300,21 +307,45 @@ class Panel(ScreenPanel):
             checkbox_renderer,
             lambda column, cell, model, it, data:
             self._set_cell_background(cell, model.get_value(it, 0)) and
-            cell.set_property('active', model.get_value(it, 0).id == self._active_spool_id)
+            cell.set_property('active', model.get_value(it, 0).id == self._printer.active_spool_id)
         )
 
         self._treeview.append_column(column_id)
         self._treeview.append_column(column_icon)
         self._treeview.append_column(column_spool)
         self._treeview.append_column(column_last_used)
-        self._treeview.append_column(column_material)
+        self._treeview.append_column(self._column_edit)
         self._treeview.append_column(column_toggle_active_spool)
+        self._treeview.connect("button-press-event", self._open_spool_detail)
 
         self.current_sort_widget = sort_btn_id
         sort_btn_used.clicked()
 
         self.scroll.add(self._treeview)
         self.content.add(self.main)
+
+    def _open_spool_detail(self, treeview, event):
+        if event.button != 1:
+            return False
+        path_info = treeview.get_path_at_pos(event.x, event.y)
+        if not path_info:
+            return False
+
+        path, column, _, _ = path_info
+        if column is not self._column_edit:
+            return False
+
+        model = treeview.get_model()
+        it = model.get_iter(path)
+        if it is None:
+            return False
+        spool = model.get_value(it, 0)
+        if spool is None:
+            logging.error(f"Spool object is None at path {path}")
+            return False
+        logging.info(f"Opening spool editor for ID: {spool.id}")
+        self._screen.show_panel("spool_editor", extra=spool)
+        return True
 
     def _filter_spools(self, model, i, data):
         spool: SpoolmanSpool = model[i][0]
@@ -324,18 +355,20 @@ class Panel(ScreenPanel):
         return matches
 
     def _set_cell_background(self, cell, spool: SpoolmanSpool):
-        cell.set_property('cell-background-rgba', Gdk.RGBA(1, 1, 1, .1) if spool.id == self._active_spool_id else None)
+        cell.set_property(
+            'cell-background-rgba', Gdk.RGBA(1, 1, 1, .1) if spool.id == self._printer.active_spool_id else None
+        )
         return True
 
     def _get_filament_formated(self, spool: SpoolmanSpool):
-        if spool.id == self._active_spool_id:
+        if spool.id == self._printer.active_spool_id:
             result = f'<big><b>{spool.name}</b></big>\n'
         else:
             result = f'<big>{spool.name}</big>\n'
         if hasattr(spool, "comment"):
             result += f'{_("Comment")}:<b> {spool.comment}</b>\n'
         if spool.last_used:
-            result += f'{_("Last used")}:<b> {spool.last_used.astimezone():{self.timeFormat}}</b>\n'
+            result += f'{_("Used")}:<b> {spool.last_used.astimezone():{self.timeFormat}}</b>\n'
         if hasattr(spool, "remaining_weight"):
             result += f'{_("Remaining weight")}: <b>{round(spool.remaining_weight, 2)} g</b>\n'
         if hasattr(spool, "remaining_length"):
@@ -347,7 +380,7 @@ class Panel(ScreenPanel):
         model = self._treeview.get_model()
         it = model.get_iter(path)
         spool = model.get_value(it, 0)
-        if spool.id == self._active_spool_id:
+        if spool.id == self._printer.active_spool_id:
             self.clear_active_spool()
         else:
             self.set_active_spool(spool)
@@ -375,26 +408,44 @@ class Panel(ScreenPanel):
 
     def process_update(self, action, data):
         if action == "notify_active_spool_set":
-            self._active_spool_id = data['spool_id']
-            self._treeview.get_model().foreach(lambda store, treepath, treeiter:
-                                               store.row_changed(treepath, treeiter)
-                                               )
-            self._treeview.queue_draw()
+            self.update_active_spool(data["spool_id"])
 
-    def load_spools(self, data=None):
+    def update_active_spool(self, spool_id):
+        if not self._treeview:
+            return
+        model = self._treeview.get_model()
+        new_id = self._printer.active_spool_id
+        old_id = getattr(self, '_prev_active_id', None)
+        if new_id == old_id:
+            return
+        found_count = 0
+        target_count = 2 if old_id is not None else 1
+
+        for row in model:
+            if row[0].id in (new_id, old_id):
+                model.row_changed(row.path, row.iter)
+                found_count += 1
+                if found_count == target_count:
+                    break
+
+        self._prev_active_id = new_id
+        self._treeview.queue_draw()
+
+    def refresh(self, *args):
+        self.load_spools()
+        self.get_active_spool()
+
+    def load_spools(self, *args):
         hide_archived = self._config.get_config().getboolean("spoolman", "hide_archived", fallback=True)
         self._model.clear()
         self._materials.clear()
-        spools = self.apiClient.post_request("server/spoolman/proxy", json={
-            "request_method": "GET",
-            "path": f"/v1/spool?allow_archived={not hide_archived}",
-        })
-        if not spools or "result" not in spools:
+        spools = self._screen.spoolman_api.load_all_spools(allow_archived=not hide_archived)
+        if not spools:
             self._screen.show_popup_message(_("Error trying to fetch spools"))
             return
 
         materials = []
-        for spool in spools["result"]:
+        for spool in spools:
             spoolObject = SpoolmanSpool(**spool)
             self._model.append(None, [spoolObject])
             if not hasattr(spoolObject.filament, 'material'):
@@ -407,24 +458,20 @@ class Panel(ScreenPanel):
         for material in materials:
             self._materials.append([material, material])
 
+    def get_active_spool(self):
+        spool_id = self._screen.spoolman_api.get_active_spool_id()
+        if spool_id is not None:
+            self._screen.update_spool_data(spool_id)
+        self.update_active_spool(spool_id)
+
     def clear_active_spool(self, sender: Gtk.Button = None):
-        result = self.apiClient.post_request("server/spoolman/spool_id", json={})
+        result = self._screen.spoolman_api.clear_active_spool()
         if not result:
             self._screen.show_popup_message(_("Error clearing active spool"))
             return
 
     def set_active_spool(self, spool: SpoolmanSpool):
-        result = self.apiClient.post_request("server/spoolman/spool_id", json={
-            "spool_id": spool.id
-        })
+        result = self._screen.spoolman_api.set_active_spool_id(spool.id)
         if not result:
             self._screen.show_popup_message(_("Error setting active spool"))
             return
-
-    def get_active_spool(self) -> SpoolmanSpool:
-        result = self.apiClient.send_request("server/spoolman/spool_id")
-        if not result:
-            self._screen.show_popup_message(_("Error getting active spool"))
-            return
-        self._active_spool_id = result["spool_id"]
-        return self._active_spool_id
