@@ -142,7 +142,13 @@ class Panel(ScreenPanel):
         if bssid in self.network_rows:
             return
 
-        net = next(net for net in self.sdbus_nm.get_networks() if bssid == net["BSSID"])
+        # The AP may have disappeared since load_networks() listed it (scan
+        # results churn constantly) — a bare next() then raises StopIteration
+        # and kills the whole panel ("no WiFi list" + NM error popup).
+        net = next((net for net in self.sdbus_nm.get_networks() if bssid == net["BSSID"]), None)
+        if net is None:
+            logging.debug(f"AP {bssid} disappeared before it could be added, skipping")
+            return
         ssid = net["SSID"]
 
         connect = self._gtk.Button("load", None, "color3", self.bts)

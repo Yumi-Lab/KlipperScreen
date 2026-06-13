@@ -181,19 +181,27 @@ class SdbusNm:
         networks = []
         if self.wlan_device:
             all_aps = [AccessPoint(result) for result in self.wlan_device.access_points]
-            networks.extend(
-                {
-                    "SSID": ap.ssid.decode("utf-8", errors="ignore"),
-                    "known": self.is_known(ap.ssid.decode("utf-8", errors="ignore")),
-                    "security": get_encryption(ap.rsn_flags or ap.wpa_flags or ap.flags),
-                    "frequency": WifiChannels(ap.frequency)[0],
-                    "channel": WifiChannels(ap.frequency)[1],
-                    "signal_level": ap.strength,
-                    "BSSID": ap.hw_address,
-                }
-                for ap in all_aps
-                if ap.ssid
-            )
+            for ap in all_aps:
+                # APs churn while we read them: an AccessPoint D-Bus object
+                # can vanish between listing and property access, raising
+                # DbusUnknownMethodError mid-scan. Skip it instead of
+                # aborting the whole list (which left the panel empty).
+                try:
+                    if not ap.ssid:
+                        continue
+                    networks.append(
+                        {
+                            "SSID": ap.ssid.decode("utf-8", errors="ignore"),
+                            "known": self.is_known(ap.ssid.decode("utf-8", errors="ignore")),
+                            "security": get_encryption(ap.rsn_flags or ap.wpa_flags or ap.flags),
+                            "frequency": WifiChannels(ap.frequency)[0],
+                            "channel": WifiChannels(ap.frequency)[1],
+                            "signal_level": ap.strength,
+                            "BSSID": ap.hw_address,
+                        }
+                    )
+                except Exception as e:
+                    logging.debug(f"AP vanished during scan, skipping: {e}")
             return sorted(networks, key=lambda i: i["signal_level"], reverse=True)
         return networks
 
