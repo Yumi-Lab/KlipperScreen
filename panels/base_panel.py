@@ -513,12 +513,31 @@ class BasePanel(ScreenPanel):
 
         self.titlelbl.set_label(f"{printer} {title}")
 
-    def get_mac_address(self):
+    # The YUMI ID is the MAC address of the wired port. Armbian names the H3 port
+    # end0; a stock Debian (net.ifnames=0) or another board says eth0 or enp/enx*.
+    # Same NIC, same MAC: the ID stays identical whatever the naming scheme, and
+    # end0 is tried first so existing pads keep exactly the value they had.
+    YUMI_ID_INTERFACES = ("end0", "eth0")
+
+    @staticmethod
+    def _wired_interfaces():
         try:
-            mac = netifaces.ifaddresses('end0')[netifaces.AF_LINK][0]['addr']
-            return mac.replace(':', '').upper()
-        except (KeyError, IndexError, ValueError):
-            return "UNKNOWN"
+            return sorted(
+                iface for iface in netifaces.interfaces()
+                if iface.startswith(("en", "eth")) and iface not in BasePanel.YUMI_ID_INTERFACES
+            )
+        except (OSError, ValueError):
+            return []
+
+    def get_mac_address(self):
+        for iface in (*self.YUMI_ID_INTERFACES, *self._wired_interfaces()):
+            try:
+                mac = netifaces.ifaddresses(iface)[netifaces.AF_LINK][0]['addr']
+            except (KeyError, IndexError, ValueError):
+                continue
+            if mac and mac != "00:00:00:00:00:00":
+                return mac.replace(':', '').upper()
+        return "UNKNOWN"
 
     def update_time(self):
         # Display YUMI ID (MAC address) instead of clock
