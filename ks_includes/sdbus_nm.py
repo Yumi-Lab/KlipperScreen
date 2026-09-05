@@ -237,6 +237,11 @@ class SdbusNm:
                 "uuid": ("s", str(uuid4())),
                 "type": ("s", "802-11-wireless"),
                 "interface-name": ("s", self.wlan_device.interface),
+                # A printer must come back online by itself: with NetworkManager's
+                # default (4 retries) a pad whose access point is away for two
+                # minutes at boot gives up and stays offline until someone opens
+                # this panel again. 0 = retry forever.
+                "autoconnect-retries": ("i", 0),
             },
             "802-11-wireless": {
                 "mode": ("s", "infrastructure"),
