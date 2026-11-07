@@ -93,19 +93,45 @@ class SdbusNm:
             return None
         sdbus.set_default_bus(self.system_bus)
         self.nm = NetworkManager()
-        self.wlan_device = (
-            self.get_wireless_interfaces()[0] if self.get_wireless_interfaces() else None
-        )
-        self.wifi = self.wlan_device is not None
+        self.pinned_wlan_iface = None
         self.monitor_connection = False
         self.wifi_state = -1
         self.popup = popup_callback
+        if self.wlan_device is None:
+            logging.info("No Wi-Fi device yet, one is picked up as soon as it shows up")
+            return
         if self.wlan_device.state == enums.DeviceState.UNMANAGED:
             self.popup(
                 f"{self.wlan_device.interface} is not managed by "
                 "NetworkManager and cannot be controlled by this app"
             )
             return
+
+    @property
+    def wlan_device(self):
+        # Resolved on every use and never kept around. NetworkManager destroys the
+        # device object and builds a new one at a NEW D-Bus object path whenever the
+        # adapter is re-probed: USB dongle replugged, or its driver reloaded by
+        # sonar's WiFi recovery. A proxy kept from __init__ then raises
+        # DbusUnknownMethodError ("Object does not exist at path ...") on every
+        # property access and the network panel stays empty until KlipperScreen is
+        # restarted — measured on a bench 2026-11-07, the panel still talking to
+        # Devices/5 while wlan0 had become Devices/4. Object paths are reused after
+        # a NetworkManager restart too, so a cached one can quietly end up pointing
+        # at another device. The device may also not exist yet when KlipperScreen
+        # starts before the dongle is enumerated: this returns None then, and the
+        # next call finds it.
+        interfaces = self.get_wireless_interfaces()
+        if self.pinned_wlan_iface:
+            return next(
+                (device for device in interfaces if device.interface == self.pinned_wlan_iface),
+                None,
+            )
+        return interfaces[0] if interfaces else None
+
+    @property
+    def wifi(self):
+        return self.wlan_device is not None
 
     def ensure_nm_running(self):
         try:
@@ -424,7 +450,9 @@ class SdbusNm:
                         "NetworkManager and cannot be controlled by this app"
                     )
                     return
-                self.wlan_device = wireless
+                # Pin the interface NAME, not the proxy: the D-Bus object path
+                # changes on every re-probe of the adapter, the name survives it.
+                self.pinned_wlan_iface = iface_name
                 logging.debug(f"Switched wlan_device to {iface_name}")
                 return
         raise ValueError(f"No Wi‑Fi interface named '{iface_name}' found.")
