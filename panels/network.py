@@ -42,7 +42,10 @@ class Panel(ScreenPanel):
             )
             self.error_box.set_valign(Gtk.Align.CENTER)
             self.content.add(self.error_box)
-            self._screen.panels_reinit.append(self._screen._cur_panels[-1])
+            # Name this panel, not _cur_panels[-1]: a panel is appended to
+            # _cur_panels only once it is built, so during __init__ the last entry
+            # is still the panel we came from, and the rebuild was registered on it.
+            self._screen.panels_reinit.append("network")
             return
         self.update_timeout = None
         self.network_list = Gtk.Box(
@@ -122,6 +125,11 @@ class Panel(ScreenPanel):
             self.labels["networkinfo"] = Gtk.Label()
             scroll.add(self.labels["networkinfo"])
             self.update_single_network_info()
+            # The adapter can show up after this panel was built: a USB dongle
+            # enumerated late at boot, replugged, or its driver reloaded by sonar's
+            # WiFi recovery. Without this the panel keeps its no-WiFi layout, where
+            # the network list is not even in the widget tree, for the whole session.
+            self._screen.panels_reinit.append("network")
 
         self.labels["main_box"].pack_start(scroll, True, True, 0)
         self.content.add(self.labels["main_box"])
